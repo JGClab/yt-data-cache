@@ -180,6 +180,12 @@ async function processCompetitor(c) {
       .sort((a, b) => b.views - a.views)
       .slice(0, VERIFY_PER_RUN);
     console.log("Gemini activo: " + pend.length + " vídeos a verificar");
+    try {
+      const ping = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: "responde solo: ok" }] }] }) });
+      const pj = await ping.json();
+      console.log("Gemini ping texto: " + (pj.error ? JSON.stringify(pj.error).slice(0, 300) : "OK"));
+    } catch (e) { console.log("Gemini ping texto: " + e.message); }
     for (const v of pend) {
       try {
         const verdict = await gemini(v.id, c.name);
@@ -218,7 +224,7 @@ async function gemini(videoId, brand) {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${GEMINI_KEY}`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json();
-    if (j.error) { lastErr = new Error(j.error.message); if (j.error.code === 404) continue; throw lastErr; }
+    if (j.error) { lastErr = new Error(JSON.stringify(j.error).slice(0, 350)); if (j.error.code === 404) continue; throw lastErr; }
     const txt = j.candidates?.[0]?.content?.parts?.[0]?.text || "";
     return JSON.parse(txt);
   }
