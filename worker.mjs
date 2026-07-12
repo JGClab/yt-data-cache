@@ -99,7 +99,7 @@ function mapVids(vids, name, RXs) {
         hasLink, code,
         // "paid" SOLO si YouTube lo declara oficialmente; enlace de afiliado = "maybe"
         // hasta que Gemini confirme mención hablada (entonces pasa a paid u organic)
-        paid: declared ? "paid" : ((hasLink || heur) ? "maybe" : "organic"),
+        paid: (hasLink || heur || declared) ? "maybe" : "organic", // "paid" SOLO lo otorga la mención hablada verificada
         declared: !!declared
       };
     });
@@ -125,7 +125,7 @@ async function processCompetitor(c) {
   prev.forEach(v => {
     v.code = sanitizeCode(v.code);
     v.hasLink = !!v.code;
-    if (!v.declared && v.spoken === undefined && v.paid === "paid") v.paid = v.hasLink ? "maybe" : "organic";
+    if (v.spoken === undefined && v.paid === "paid") v.paid = (v.hasLink || v.declared) ? "maybe" : "organic";
   });
   const run = (state.run || 0) + 1;
 
@@ -221,7 +221,7 @@ async function processCompetitor(c) {
     // TODO vídeo con enlace se verifica individualmente (los canales mezclan ad-reads
     // pagados con enlaces de plantilla, no se puede inferir por canal). Más views primero.
     const pend = all
-      .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
+      .filter(v => (v.hasLink || v.declared) && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
       .sort((a, b) => b.views - a.views)
       .slice(0, VERIFY_PER_RUN);
     for (const v of pend) {
@@ -230,6 +230,7 @@ async function processCompetitor(c) {
         v.spoken = !!verdict.spoken;
         v.spokenQuote = verdict.quote || null;
         v.spokenAt = verdict.second ?? null;
+        v.paid = v.spoken ? "paid" : "organic";
         console.log(`  🎙 ${v.id} (${v.channel}): ${v.spoken ? "MENCIÓN HABLADA" : "solo enlace"}`);
       } catch (e) {
         v.vTries = (v.vTries || 0) + 1;
