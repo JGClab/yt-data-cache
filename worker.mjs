@@ -55,16 +55,30 @@ function detectLang(t) {
   return best;
 }
 
+// extrae el código de afiliado REAL de una descripción; null si el enlace es genérico
+// (rutas de idioma zh/ja/ko…, páginas de producto esim-*, secciones de la web)
+function sanitizeCode(code) {
+  if (!code) return null;
+  const c = code.toLowerCase();
+  if (GENERIC.has(c)) return null;
+  if (/^[a-z]{2}(-[a-z]{2,4})?$/.test(c)) return null; // códigos de idioma (zh, ja, ko, zh-tw…)
+  if (/^esim/.test(c)) return null;                     // páginas de producto (esim-usa…)
+  if (c.length > 25) return null;
+  return code;
+}
+function affCode(desc, RX) {
+  const lm = (desc || "").match(RX);
+  return lm ? sanitizeCode(lm[1]) : null;
+}
+
 function mapVids(vids, name, RX) {
   return vids
     .filter(v => ((v.snippet.title + " " + v.snippet.description).toLowerCase().includes(name)))
     .map(v => {
       const sn = v.snippet, txt = sn.title + " " + sn.description;
       const declared = v.paidProductPlacementDetails?.hasPaidProductPlacement;
-      const lm = (sn.description || "").match(RX);
-      const hasLink = !!lm;
-      let code = lm ? lm[1] : null;
-      if (code && (GENERIC.has(code.toLowerCase()) || code.length > 25)) code = null;
+      const code = affCode(sn.description, RX);
+      const hasLink = !!code; // enlace de afiliado REAL, no un enlace cualquiera a la web
       const heur = PAID_RX.test(txt) && txt.toLowerCase().includes(name || "");
       const dur = parseDur(v.contentDetails?.duration);
       return {
@@ -74,7 +88,9 @@ function mapVids(vids, name, RX) {
         lang: sn.defaultAudioLanguage?.slice(0, 2) || sn.defaultLanguage?.slice(0, 2) || detectLang(txt),
         views: +(v.statistics?.viewCount || 0),
         hasLink, code,
-        paid: (declared || hasLink) ? "paid" : (heur ? "maybe" : "organic"),
+        // "paid" SOLO si YouTube lo declara oficialmente; enlace de afiliado = "maybe"
+        // hasta que Gemini confirme mención hablada (entonces pasa a paid u organic)
+        paid: declared ? "paid" : ((hasLink || heur) ? "maybe" : "organic"),
         declared: !!declared
       };
     });
@@ -96,6 +112,12 @@ async function processCompetitor(c) {
   let state = { at: null, run: 0, videos: [], chanMeta: {} };
   if (fs.existsSync(file)) state = JSON.parse(fs.readFileSync(file, "utf8"));
   const prev = state.videos || [];
+  // migración: sanear registros antiguos con códigos falsos (rutas de idioma, esim-*)
+  prev.forEach(v => {
+    v.code = sanitizeCode(v.code);
+    v.hasLink = !!v.code;
+    if (!v.declared && v.spoken === undefined && v.paid === "paid") v.paid = v.hasLink ? "maybe" : "organic";
+  });
   const run = (state.run || 0) + 1;
 
   // FASE 1 — búsqueda (extra queries rotan: 3 por ejecución)
@@ -145,7 +167,7 @@ async function processCompetitor(c) {
         let res; try { res = await yt("playlistItems", params); } catch (e) { if (e.message === "QUOTA") throw e; break; }
         (res.items || []).forEach(it => {
           const vid = it.snippet?.resourceId?.videoId;
-          if (vid && !have.has(vid) && RX.test(it.snippet?.description || "")) newIds.add(vid);
+          if (vid && !have.has(vid) && affCode(it.snippet?.description, RX)) newIds.add(vid);
         });
         tok = res.nextPageToken; if (!tok) break;
       }
@@ -161,7 +183,7 @@ async function processCompetitor(c) {
     let popIds = new Set();
     for (const rg of REGIONS) {
       const res = await yt("videos", { part: "snippet", chart: "mostPopular", regionCode: rg, maxResults: "50" });
-      (res.items || []).forEach(v => { if (!have.has(v.id) && RX.test(v.snippet?.description || "")) popIds.add(v.id); });
+      (res.items || []).forEach(v => { if (!have.has(v.id) && affCode(v.snippet?.description, RX)) popIds.add(v.id); });
     }
     popData = mapVids(await fetchDetails([...popIds]), "", RX);
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 3"); }
@@ -173,19 +195,24 @@ async function processCompetitor(c) {
   const all = Object.values(byId);
 
   // FASE 4 — verificación de mención hablada con Gemini (escucha el audio real)
-  console.log("Gemini: " + (GEMINI_KEY ? "clave presente (" + GEMINI_KEY.length + " chars)" : "SIN CLAVE — fase 4 saltada"));
   if (GEMINI_KEY) {
+    // muestreo por canal: máx 3 vídeos verificados por canal (suficiente para conocer su patrón),
+    // priorizando los canales con más views acumuladas (donde está la inversión de verdad)
+    const chanViews = {}, chanDone = {};
+    all.filter(v => v.hasLink).forEach(v => {
+      chanViews[v.channelId] = (chanViews[v.channelId] || 0) + v.views;
+      if (v.spoken !== undefined) chanDone[v.channelId] = (chanDone[v.channelId] || 0) + 1;
+    });
     const pend = all
       .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
-      .sort((a, b) => b.views - a.views)
+      .sort((a, b) => (chanViews[b.channelId] - chanViews[a.channelId]) || (b.views - a.views))
+      .filter(v => {
+        const c = v.channelId;
+        if ((chanDone[c] || 0) >= 3) return false;
+        chanDone[c] = (chanDone[c] || 0) + 1;
+        return true;
+      })
       .slice(0, VERIFY_PER_RUN);
-    console.log("Gemini activo: " + pend.length + " vídeos a verificar");
-    try {
-      const ping = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + GEMINI_KEY,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: "responde solo: ok" }] }] }) });
-      const pj = await ping.json();
-      console.log("Gemini ping texto: " + (pj.error ? JSON.stringify(pj.error).slice(0, 300) : "OK"));
-    } catch (e) { console.log("Gemini ping texto: " + e.message); }
     for (const v of pend) {
       try {
         const verdict = await gemini(v.id, c.name);
