@@ -173,7 +173,7 @@ async function processCompetitor(c) {
   console.log("Gemini: " + (GEMINI_KEY ? "clave presente (" + GEMINI_KEY.length + " chars)" : "SIN CLAVE — fase 4 saltada"));
   if (GEMINI_KEY) {
     const pend = all
-      .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 3600)
+      .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
       .sort((a, b) => b.views - a.views)
       .slice(0, VERIFY_PER_RUN);
     console.log("Gemini activo: " + pend.length + " vídeos a verificar");
@@ -189,6 +189,7 @@ async function processCompetitor(c) {
         console.log(`  🎙 ${v.id}: no verificado (${e.message.slice(0, 80)})`);
         if (/quota|rate|resource.?exhausted/i.test(e.message)) break; // tier del día agotado
       }
+      await new Promise(r => setTimeout(r, 45000)); // respetar límite de tokens/minuto del tier gratis
     }
   }
 
@@ -206,7 +207,7 @@ async function gemini(videoId, brand) {
       { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId } },
       { text: `Analiza el AUDIO de este vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje; puede pronunciarse "seili", "saili" o "sely")? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
     ]}],
-    generationConfig: { responseMimeType: "application/json", temperature: 0 }
+    generationConfig: { responseMimeType: "application/json", temperature: 0, mediaResolution: "MEDIA_RESOLUTION_LOW" }
   };
   let lastErr;
   for (const m of models) {
