@@ -6,7 +6,7 @@ import fs from "fs";
 const KEY = process.env.YT_API_KEY;
 if (!KEY) { console.error("Falta el secret YT_API_KEY"); process.exit(1); }
 const GEMINI_KEY = process.env.GEMINI_API_KEY; // opcional: verificación de mención hablada
-const VERIFY_PER_RUN = 6; // vídeos verificados por ejecución (3 runs/día ≈ 18, dentro del tier gratis)
+const VERIFY_PER_RUN = 60; // vídeos por ejecución; el guard de cuota corta solo si el tier diario se agota
 
 const config = JSON.parse(fs.readFileSync("config.json", "utf8"));
 const REGIONS = ["US","GB","ES","MX","AR","CO","CL","FR","IT","DE","PT","BR","PL","LT","NL","TW","JP","CA","AU","IN"];
@@ -85,7 +85,7 @@ function mapVids(vids, name, RX) {
         id: v.id, title: sn.title, channel: sn.channelTitle, channelId: sn.channelId,
         date: sn.publishedAt.slice(0, 10),
         dur, format: dur ? (dur <= 183 ? "short" : "long") : null,
-        lang: sn.defaultAudioLanguage?.slice(0, 2) || sn.defaultLanguage?.slice(0, 2) || detectLang(txt),
+        lang: (sn.defaultAudioLanguage?.slice(0, 2) || sn.defaultLanguage?.slice(0, 2) || detectLang(txt)).toLowerCase(),
         views: +(v.statistics?.viewCount || 0),
         hasLink, code,
         // "paid" SOLO si YouTube lo declara oficialmente; enlace de afiliado = "maybe"
@@ -198,20 +198,11 @@ async function processCompetitor(c) {
   if (GEMINI_KEY) {
     // muestreo por canal: máx 3 vídeos verificados por canal (suficiente para conocer su patrón),
     // priorizando los canales con más views acumuladas (donde está la inversión de verdad)
-    const chanViews = {}, chanDone = {};
-    all.filter(v => v.hasLink).forEach(v => {
-      chanViews[v.channelId] = (chanViews[v.channelId] || 0) + v.views;
-      if (v.spoken !== undefined) chanDone[v.channelId] = (chanDone[v.channelId] || 0) + 1;
-    });
+    // TODO vídeo con enlace se verifica individualmente (los canales mezclan ad-reads
+    // pagados con enlaces de plantilla, no se puede inferir por canal). Más views primero.
     const pend = all
       .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
-      .sort((a, b) => (chanViews[b.channelId] - chanViews[a.channelId]) || (b.views - a.views))
-      .filter(v => {
-        const c = v.channelId;
-        if ((chanDone[c] || 0) >= 3) return false;
-        chanDone[c] = (chanDone[c] || 0) + 1;
-        return true;
-      })
+      .sort((a, b) => b.views - a.views)
       .slice(0, VERIFY_PER_RUN);
     for (const v of pend) {
       try {
