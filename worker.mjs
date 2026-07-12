@@ -5,6 +5,8 @@ import fs from "fs";
 
 const KEY = process.env.YT_API_KEY;
 if (!KEY) { console.error("Falta el secret YT_API_KEY"); process.exit(1); }
+const GEMINI_KEY = process.env.GEMINI_API_KEY; // opcional: verificación de mención hablada
+const VERIFY_PER_RUN = 6; // vídeos verificados por ejecución (3 runs/día ≈ 18, dentro del tier gratis)
 
 const config = JSON.parse(fs.readFileSync("config.json", "utf8"));
 const REGIONS = ["US","GB","ES","MX","AR","CO","CL","FR","IT","DE","PT","BR","PL","LT","NL","TW","JP","CA","AU","IN"];
@@ -165,10 +167,54 @@ async function processCompetitor(c) {
   prev.forEach(v => byId[v.id] = v);
   data.concat(linkData).concat(popData).forEach(v => byId[v.id] = { ...(byId[v.id] || {}), ...v });
   const all = Object.values(byId);
+
+  // FASE 4 — verificación de mención hablada con Gemini (escucha el audio real)
+  if (GEMINI_KEY) {
+    const pend = all
+      .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 3600)
+      .sort((a, b) => b.views - a.views)
+      .slice(0, VERIFY_PER_RUN);
+    for (const v of pend) {
+      try {
+        const verdict = await gemini(v.id, c.name);
+        v.spoken = !!verdict.spoken;
+        v.spokenQuote = verdict.quote || null;
+        v.spokenAt = verdict.second ?? null;
+        console.log(`  🎙 ${v.id} (${v.channel}): ${v.spoken ? "MENCIÓN HABLADA" : "solo enlace"}`);
+      } catch (e) {
+        v.vTries = (v.vTries || 0) + 1;
+        console.log(`  🎙 ${v.id}: no verificado (${e.message.slice(0, 80)})`);
+        if (/quota|rate|resource.?exhausted/i.test(e.message)) break; // tier del día agotado
+      }
+    }
+  }
+
   fs.mkdirSync("data", { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), run, videos: all, chanMeta }));
   const nl = all.filter(v => v.hasLink).length;
-  console.log(`${c.id}: ${all.length} menciones (+${all.length - prev.length}) · ${nl} con enlace · cuota usada ~${quota}`);
+  const nv = all.filter(v => v.spoken !== undefined).length;
+  console.log(`${c.id}: ${all.length} menciones (+${all.length - prev.length}) · ${nl} con enlace · ${nv} verificadas · cuota usada ~${quota}`);
+}
+
+async function gemini(videoId, brand) {
+  const models = ["gemini-2.5-flash", "gemini-2.0-flash"];
+  const body = {
+    contents: [{ parts: [
+      { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId } },
+      { text: `Analiza el AUDIO de este vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje; puede pronunciarse "seili", "saili" o "sely")? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
+    ]}],
+    generationConfig: { responseMimeType: "application/json", temperature: 0 }
+  };
+  let lastErr;
+  for (const m of models) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${GEMINI_KEY}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (j.error) { lastErr = new Error(j.error.message); if (j.error.code === 404) continue; throw lastErr; }
+    const txt = j.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return JSON.parse(txt);
+  }
+  throw lastErr || new Error("sin modelo disponible");
 }
 
 for (const c of config.competitors) {
