@@ -149,7 +149,16 @@ async function processCompetitor(c) {
   data.concat(prev).forEach(v => { if (v.hasLink && v.channelId) linkCount[v.channelId] = (linkCount[v.channelId] || 0) + 1; });
   const chanMeta = state.chanMeta || {};
   const now = Date.now(), COOLDOWN = 20 * 3600e3;
-  const chans = [...new Set(data.concat(prev).filter(v => v.hasLink && v.channelId).map(v => v.channelId).concat(c.seedChannels || []))]
+  // GRAFO COMPARTIDO: los creators del nicho rotan de sponsor, así que escaneamos
+  // también los canales descubiertos por las DEMÁS marcas buscando enlaces de ESTA.
+  let globalChans = [];
+  for (const other of config.competitors) {
+    const f2 = `data/${other.id}.json`;
+    if (other.id !== c.id && fs.existsSync(f2)) {
+      try { (JSON.parse(fs.readFileSync(f2, "utf8")).videos || []).forEach(v => { if (v.hasLink && v.channelId) globalChans.push(v.channelId); }); } catch (e) {}
+    }
+  }
+  const chans = [...new Set(data.concat(prev).filter(v => v.hasLink && v.channelId).map(v => v.channelId).concat(c.seedChannels || []).concat(globalChans))]
     .filter(ch => !(chanMeta[ch] && now - chanMeta[ch] < COOLDOWN));
   let newIds = new Set();
   const have = new Set(data.map(v => v.id).concat(prev.map(v => v.id)));
