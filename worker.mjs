@@ -181,7 +181,7 @@ async function processCompetitor(c) {
       .slice(0, VERIFY_PER_RUN);
     console.log("Gemini activo: " + pend.length + " vídeos a verificar");
     try {
-      const ping = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY,
+      const ping = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=" + GEMINI_KEY,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: "responde solo: ok" }] }] }) });
       const pj = await ping.json();
       console.log("Gemini ping texto: " + (pj.error ? JSON.stringify(pj.error).slice(0, 300) : "OK"));
@@ -210,7 +210,7 @@ async function processCompetitor(c) {
 }
 
 async function gemini(videoId, brand) {
-  const models = ["gemini-2.5-flash", "gemini-2.0-flash"];
+  const models = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
   const body = {
     contents: [{ parts: [
       { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId },
