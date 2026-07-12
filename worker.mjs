@@ -113,6 +113,7 @@ async function processCompetitor(c) {
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 1"); }
   (c.seedVideos || []).forEach(v => idSet.add(v));
   prev.forEach(v => idSet.delete(v.id)); // ya conocidos: no re-consultar detalles aquí
+  prev.filter(v => !v.dur).forEach(v => idSet.add(v.id)); // backfill: registros antiguos sin duración
   let data = [];
   try { data = mapVids(await fetchDetails([...idSet]), name, RX); } catch (e) { if (e.message !== "QUOTA") throw e; }
 
