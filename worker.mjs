@@ -66,18 +66,27 @@ function sanitizeCode(code) {
   if (c.length > 25) return null;
   return code;
 }
-function affCode(desc, RX) {
-  const lm = (desc || "").match(RX);
-  return lm ? sanitizeCode(lm[1]) : null;
+// cada marca puede definir sus propios patrones de enlace de afiliado (linkPatterns);
+// si no, el patrón por defecto es dominio/segmento (estilo saily.com/codigo)
+function buildRXs(c) {
+  const pats = c.linkPatterns || [c.domain.replace(/\./g, "\\.") + "/([\\w\\-]+)"];
+  return pats.map(p => new RegExp(p, "i"));
+}
+function affCode(desc, RXs) {
+  for (const RX of RXs) {
+    const lm = (desc || "").match(RX);
+    if (lm) { const code = sanitizeCode(lm[1]); if (code) return code; }
+  }
+  return null;
 }
 
-function mapVids(vids, name, RX) {
+function mapVids(vids, name, RXs) {
   return vids
     .filter(v => ((v.snippet.title + " " + v.snippet.description).toLowerCase().includes(name)))
     .map(v => {
       const sn = v.snippet, txt = sn.title + " " + sn.description;
       const declared = v.paidProductPlacementDetails?.hasPaidProductPlacement;
-      const code = affCode(sn.description, RX);
+      const code = affCode(sn.description, RXs);
       const hasLink = !!code; // enlace de afiliado REAL, no un enlace cualquiera a la web
       const heur = PAID_RX.test(txt) && txt.toLowerCase().includes(name || "");
       const dur = parseDur(v.contentDetails?.duration);
@@ -107,7 +116,7 @@ async function fetchDetails(ids) {
 
 async function processCompetitor(c) {
   const name = c.name.toLowerCase();
-  const RX = new RegExp(c.domain.replace(/\./g, "\\.") + "/([\\w\\-]+)", "i");
+  const RXs = buildRXs(c);
   const file = `data/${c.id}.json`;
   let state = { at: null, run: 0, videos: [], chanMeta: {} };
   if (fs.existsSync(file)) state = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -142,7 +151,7 @@ async function processCompetitor(c) {
   prev.forEach(v => idSet.delete(v.id)); // ya conocidos: no re-consultar detalles aquí
   prev.filter(v => !v.dur).forEach(v => idSet.add(v.id)); // backfill: registros antiguos sin duración
   let data = [];
-  try { data = mapVids(await fetchDetails([...idSet]), name, RX); } catch (e) { if (e.message !== "QUOTA") throw e; }
+  try { data = mapVids(await fetchDetails([...idSet]), name, RXs); } catch (e) { if (e.message !== "QUOTA") throw e; }
 
   // FASE 2 — bola de nieve con cooldown y prioridad
   const linkCount = {};
@@ -178,7 +187,7 @@ async function processCompetitor(c) {
         let res; try { res = await yt("playlistItems", params); } catch (e) { if (e.message === "QUOTA") throw e; break; }
         (res.items || []).forEach(it => {
           const vid = it.snippet?.resourceId?.videoId;
-          if (vid && !have.has(vid) && affCode(it.snippet?.description, RX)) newIds.add(vid);
+          if (vid && !have.has(vid) && affCode(it.snippet?.description, RXs)) newIds.add(vid);
         });
         tok = res.nextPageToken; if (!tok) break;
       }
@@ -186,7 +195,7 @@ async function processCompetitor(c) {
     }
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 2"); }
   let linkData = [];
-  try { linkData = mapVids(await fetchDetails([...newIds]), "", RX); } catch (e) { if (e.message !== "QUOTA") throw e; }
+  try { linkData = mapVids(await fetchDetails([...newIds]), "", RXs); } catch (e) { if (e.message !== "QUOTA") throw e; }
 
   // FASE 3 — populares por país
   let popData = [];
@@ -194,9 +203,9 @@ async function processCompetitor(c) {
     let popIds = new Set();
     for (const rg of REGIONS) {
       const res = await yt("videos", { part: "snippet", chart: "mostPopular", regionCode: rg, maxResults: "50" });
-      (res.items || []).forEach(v => { if (!have.has(v.id) && affCode(v.snippet?.description, RX)) popIds.add(v.id); });
+      (res.items || []).forEach(v => { if (!have.has(v.id) && affCode(v.snippet?.description, RXs)) popIds.add(v.id); });
     }
-    popData = mapVids(await fetchDetails([...popIds]), "", RX);
+    popData = mapVids(await fetchDetails([...popIds]), "", RXs);
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 3"); }
 
   // ACUMULAR
@@ -217,7 +226,7 @@ async function processCompetitor(c) {
       .slice(0, VERIFY_PER_RUN);
     for (const v of pend) {
       try {
-        const verdict = await gemini(v.id, c.name);
+        const verdict = await gemini(v.id, c.name, c.hint || "");
         v.spoken = !!verdict.spoken;
         v.spokenQuote = verdict.quote || null;
         v.spokenAt = verdict.second ?? null;
@@ -238,13 +247,13 @@ async function processCompetitor(c) {
   console.log(`${c.id}: ${all.length} menciones (+${all.length - prev.length}) · ${nl} con enlace · ${nv} verificadas · cuota usada ~${quota}`);
 }
 
-async function gemini(videoId, brand) {
+async function gemini(videoId, brand, hint) {
   const models = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
   const body = {
     contents: [{ parts: [
       { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId },
         videoMetadata: { startOffset: "0s", endOffset: "360s" } }, // solo los primeros 6 min (donde vive el ad-read) para caber en el tier gratis
-      { text: `Analiza el AUDIO de este fragmento de vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje; puede pronunciarse "seili", "saili" o "sely")? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
+      { text: `Analiza el AUDIO de este fragmento de vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje${hint ? "; " + hint : ""})? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
     ]}],
     generationConfig: { responseMimeType: "application/json", temperature: 0, mediaResolution: "MEDIA_RESOLUTION_LOW" }
   };
