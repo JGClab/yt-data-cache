@@ -1,6 +1,15 @@
 {
   "competitors": [
     {
+      "id": "holafly",
+      "name": "Holafly",
+      "domain": "holafly.com",
+      "queries": ["Holafly eSIM", "Holafly", "código Holafly", "Holafly code", "holafly.com"],
+      "queriesExtra": ["Holafly code promo", "Holafly kod rabatowy", "Holafly codice sconto", "Holafly Rabattcode", "Holafly desconto", "Holafly kortingscode", "Holafly 優惠", "Holafly 割引", "Holafly indirim kodu", "Holafly opiniones"],
+      "seedChannels": [],
+      "seedVideos": []
+    },
+    {
       "id": "saily",
       "name": "Saily",
       "domain": "saily.com",
