@@ -123,8 +123,10 @@ async function processCompetitor(c) {
   // FASE 1 — búsqueda (extra queries rotan: 3 por ejecución)
   let idSet = new Set();
   try {
-    for (const q of c.queries) {
-      for (const order of ["date", "relevance"]) {
+    for (const [qi, q] of c.queries.entries()) {
+      // con varias marcas la cuota manda: doble pasada (fecha+relevancia) solo para la query principal
+      const orders = qi === 0 ? ["date", "relevance"] : ["date"];
+      for (const order of orders) {
         const res = await yt("search", { part: "id", q, type: "video", order, maxResults: "50" });
         (res.items || []).forEach(i => { if (i.id.videoId) idSet.add(i.id.videoId); });
       }
