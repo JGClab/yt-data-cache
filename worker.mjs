@@ -204,8 +204,9 @@ async function gemini(videoId, brand) {
   const models = ["gemini-2.5-flash", "gemini-2.0-flash"];
   const body = {
     contents: [{ parts: [
-      { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId } },
-      { text: `Analiza el AUDIO de este vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje; puede pronunciarse "seili", "saili" o "sely")? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
+      { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId },
+        videoMetadata: { startOffset: "0s", endOffset: "360s" } }, // solo los primeros 6 min (donde vive el ad-read) para caber en el tier gratis
+      { text: `Analiza el AUDIO de este fragmento de vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje; puede pronunciarse "seili", "saili" o "sely")? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
     ]}],
     generationConfig: { responseMimeType: "application/json", temperature: 0, mediaResolution: "MEDIA_RESOLUTION_LOW" }
   };
