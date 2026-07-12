@@ -25,7 +25,10 @@ async function yt(path, params) {
   const r = await fetch(u);
   quota += cost;
   const j = await r.json();
-  if (j.error) throw new Error(j.error.message || "Error API");
+  if (j.error) {
+    const msg = j.error.message || "Error API";
+    throw new Error(/quota/i.test(msg) ? "QUOTA" : msg); // cualquier error de cuota degrada la fase, no aborta el worker
+  }
   return j;
 }
 
