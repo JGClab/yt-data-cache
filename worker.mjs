@@ -170,11 +170,13 @@ async function processCompetitor(c) {
   const all = Object.values(byId);
 
   // FASE 4 — verificación de mención hablada con Gemini (escucha el audio real)
+  console.log("Gemini: " + (GEMINI_KEY ? "clave presente (" + GEMINI_KEY.length + " chars)" : "SIN CLAVE — fase 4 saltada"));
   if (GEMINI_KEY) {
     const pend = all
       .filter(v => v.hasLink && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 3600)
       .sort((a, b) => b.views - a.views)
       .slice(0, VERIFY_PER_RUN);
+    console.log("Gemini activo: " + pend.length + " vídeos a verificar");
     for (const v of pend) {
       try {
         const verdict = await gemini(v.id, c.name);
