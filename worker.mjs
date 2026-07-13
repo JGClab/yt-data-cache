@@ -5,7 +5,9 @@ import fs from "fs";
 
 const KEY = process.env.YT_API_KEY;
 if (!KEY) { console.error("Falta el secret YT_API_KEY"); process.exit(1); }
-const GEMINI_KEY = process.env.GEMINI_API_KEY; // opcional: verificación de mención hablada
+const GEMINI_KEY = process.env.GEMINI_API_KEY; // fallback: vídeos sin transcript
+const APIFY_TOKEN = process.env.APIFY_TOKEN;       // vía principal: transcripts vía Apify (~$0.001/vídeo)
+const TRANSCRIPTS_PER_RUN = 150; // transcripts por ejecución (coste ~$0.15/run, cabe en el crédito gratis)
 const VERIFY_PER_RUN = 60; // vídeos por ejecución; el guard de cuota corta solo si el tier diario se agota
 
 const config = JSON.parse(fs.readFileSync("config.json", "utf8"));
@@ -226,13 +228,54 @@ async function processCompetitor(c) {
   data.concat(linkData).concat(popData).forEach(v => byId[v.id] = { ...(byId[v.id] || {}), ...v });
   const all = Object.values(byId);
 
-  // FASE 4 — verificación de mención hablada con Gemini (escucha el audio real)
+  // FASE 4a — verificación por TRANSCRIPT (Apify): barata y masiva; la regla:
+  // si la marca aparece en lo HABLADO del vídeo → pagada; si solo hay enlace → orgánica.
+  if (APIFY_TOKEN) {
+    const pendT = all
+      .filter(v => (v.hasLink || v.declared) && v.spoken === undefined && v.tTried === undefined)
+      .sort((a, b) => b.views - a.views)
+      .slice(0, TRANSCRIPTS_PER_RUN);
+    const variants = (c.spokenVariants || [c.name.toLowerCase()]);
+    const RXv = new RegExp("\\b(" + variants.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\b", "i");
+    // agrupar por idioma del vídeo para pedir la pista de subtítulos correcta (no la traducción)
+    const groups = {};
+    pendT.forEach(v => { const l = /^[a-z]{2}$/.test(v.lang || "") ? v.lang : "en"; (groups[l] = groups[l] || []).push(v); });
+    for (const [lang, vids] of Object.entries(groups)) {
+      for (let i = 0; i < vids.length; i += 40) {
+        const batch = vids.slice(i, i + 40);
+        try {
+          const items = await apifyTranscripts(batch.map(v => v.id), lang);
+          const byVid = {};
+          items.forEach(it => {
+            const u = it.videoUrl || it.video_url || it.url || it.inputUrl || "";
+            const id = it.videoId || it.video_id || (u.match(/[?&]v=([\w-]{11})/) || [])[1];
+            if (id) byVid[id] = it;
+          });
+          for (const v of batch) {
+            const it = byVid[v.id];
+            v.tTried = true;
+            const raw = it && !it.error ? (it.text || it.transcript || it.transcript_text || it.plain_text) : null;
+            if (!raw) continue; // sin transcript → lo escuchará Gemini
+            const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+            const m = text.match(RXv);
+            v.spoken = !!m; v.vFull = true; v.vSrc = "transcript";
+            if (m) { const idx = text.toLowerCase().indexOf(m[0].toLowerCase()); v.spokenQuote = text.slice(Math.max(0, idx - 60), idx + 100).trim(); v.spokenAt = null; }
+            else { v.spokenQuote = null; v.spokenAt = null; }
+            v.paid = v.spoken ? "paid" : "organic";
+            console.log(`  📜 ${v.id} (${v.channel}): ${v.spoken ? "MENCIÓN EN TRANSCRIPT" : "sin mención"}`);
+          }
+        } catch (e) { console.log("apify: " + String(e.message).slice(0, 100)); }
+      }
+    }
+  }
+
+  // FASE 4b — fallback con Gemini (escucha el audio real) para vídeos SIN transcript
   if (GEMINI_KEY) {
     // TODO vídeo con enlace se verifica individualmente (los canales mezclan ad-reads
     // pagados con enlaces de plantilla, no se puede inferir por canal).
     // Orden: más views primero — donde está el impacto/inversión.
     const pend = all
-      .filter(v => (v.hasLink || v.declared) && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
+      .filter(v => (v.hasLink || v.declared) && v.spoken === undefined && (!APIFY_TOKEN || v.tTried) && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
       .sort((a, b) => b.views - a.views)
       .slice(0, VERIFY_PER_RUN);
     for (const v of pend) {
@@ -258,6 +301,27 @@ async function processCompetitor(c) {
   const nl = all.filter(v => v.hasLink).length;
   const nv = all.filter(v => v.spoken !== undefined).length;
   console.log(`${c.id}: ${all.length} menciones (+${all.length - prev.length}) · ${nl} con enlace · ${nv} verificadas · cuota usada ~${quota}`);
+}
+
+// lanza el actor de transcripts de Apify y devuelve los items del dataset
+async function apifyTranscripts(ids, lang) {
+  const input = {
+    startUrls: ids.map(id => ({ url: "https://www.youtube.com/watch?v=" + id })),
+    languages: [...new Set([lang, "en", "es", "fr", "it", "de", "pt", "pl", "nl", "ja", "ru", "tr", "ko"])],
+    subType: "both", outputFormats: ["text"], enableAiFallback: false
+  };
+  const r = await fetch(`https://api.apify.com/v2/acts/codepoetry~youtube-transcript-ai-scraper/runs?token=${APIFY_TOKEN}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  const runId = j.data.id;
+  let run = j.data;
+  for (let t = 0; t < 90 && !["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"].includes(run.status); t++) {
+    await new Promise(rr => setTimeout(rr, 10000));
+    run = (await (await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`)).json()).data;
+  }
+  if (run.status !== "SUCCEEDED") throw new Error("run apify " + run.status);
+  return await (await fetch(`https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_TOKEN}&clean=true`)).json();
 }
 
 async function gemini(videoId, brand, hint) {
