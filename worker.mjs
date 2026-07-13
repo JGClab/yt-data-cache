@@ -255,12 +255,19 @@ async function processCompetitor(c) {
     const cutRefresh = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
     const targets = all.filter(v => v.date >= cutRefresh || v.paid === "paid");
     if (targets.length && state.snapAt !== today) {
+      const dayAgg = { d: today, total: 0, nuevos: 0, cat: 0, vids: {} }; // serie diaria persistida
       for (let i = 0; i < targets.length; i += 50) {
         const chunk = targets.slice(i, i + 50);
         const res = await yt("videos", { part: "statistics", id: chunk.map(v => v.id).join(","), maxResults: "50" });
         const m = {}; (res.items || []).forEach(it => m[it.id] = +(it.statistics?.viewCount || 0));
         for (const v of chunk) {
           const nv = m[v.id]; if (nv === undefined) continue;
+          if (v.snapAt && (v.hasLink || v.paid === "paid")) { // delta real solo si ya había snapshot previo
+            const dl = Math.max(0, nv - v.views);
+            dayAgg.total += dl;
+            if ((v.date || "").slice(0, 7) === month) dayAgg.nuevos += dl; else dayAgg.cat += dl;
+            if (dl >= 100) dayAgg.vids[v.id] = dl; // detalle solo de los que se mueven
+          }
           if (v.vM0m !== month) { v.vPrev = (v.vM0 !== undefined) ? Math.max(0, v.views - v.vM0) : null; v.vM0 = v.views; v.vM0m = month; }
           if (!v.vWAt || (Date.parse(today) - Date.parse(v.vWAt)) >= 7 * 864e5) { v.vW = v.views; v.vWAt = today; }
           v.vD = v.views; v.vDAt = v.snapAt || null;
@@ -268,7 +275,13 @@ async function processCompetitor(c) {
         }
       }
       state.snapAt = today;
-      console.log(`  \ud83d\udcc8 snapshot de views: ${targets.length} v\u00eddeos refrescados`);
+      try { // histórico diario por marca: data/{id}-daily.json (retención ~13 meses)
+        const df = `data/${c.id}-daily.json`;
+        const hist = fs.existsSync(df) ? JSON.parse(fs.readFileSync(df, "utf8")) : [];
+        if (!hist.length || hist[hist.length - 1].d !== today) hist.push(dayAgg);
+        fs.writeFileSync(df, JSON.stringify(hist.slice(-400)));
+      } catch (e2) { console.log("daily: " + String(e2.message).slice(0, 80)); }
+      console.log(`  \ud83d\udcc8 snapshot: ${targets.length} v\u00eddeos \u00b7 hoy +${dayAgg.total} views (${dayAgg.nuevos} nuevos / ${dayAgg.cat} cat\u00e1logo)`);
     }
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en snapshot de views"); }
 
