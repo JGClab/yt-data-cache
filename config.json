@@ -157,7 +157,15 @@
         "tarjeta sim",
         "nord"
       ],
-      "excludeChannels": []
+      "excludeChannels": [],
+      "spokenVariants": [
+        "holafly",
+        "holafli",
+        "olafly",
+        "holaflay",
+        "hola fly",
+        "holafy"
+      ]
     },
     {
       "id": "saily",
@@ -259,6 +267,19 @@
       ],
       "excludeChannels": [
         "UChiZU-jCWg1PfC4x83wwdzw"
+      ],
+      "spokenVariants": [
+        "saily",
+        "sayli",
+        "seily",
+        "saili",
+        "saely",
+        "sely",
+        "saley",
+        "saylee",
+        "sailee",
+        "say-lee",
+        "sailly"
       ]
     }
   ]
