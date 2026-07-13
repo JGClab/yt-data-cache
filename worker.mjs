@@ -162,6 +162,25 @@ async function processCompetitor(c) {
     }
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 1"); }
   (c.seedVideos || []).forEach(v => idSet.add(v));
+  // FASE 1b — backlinks del dominio (índice SEO vía Apify): encuentra vídeos históricos
+  // de canales que nunca pasaron por la búsqueda. Una vez al día (run % 3 === 1).
+  if (APIFY_TOKEN && run % 3 === 1) {
+    try {
+      const items = await apifyRunActor("s-r~backlinks-checker", { domain: c.domain, include_backlinks: true });
+      const txt = JSON.stringify(items).split(String.fromCharCode(92) + "/").join("/"); // normalizar barras escapadas
+      const found = new Set();
+      for (const marker of ["youtube.com/watch?v=", "youtu.be/"]) {
+        let i = 0;
+        while ((i = txt.indexOf(marker, i)) !== -1) {
+          const id = txt.slice(i + marker.length, i + marker.length + 11);
+          if (/^[\w-]{11}$/.test(id)) found.add(id);
+          i += marker.length;
+        }
+      }
+      found.forEach(id => idSet.add(id));
+      console.log(`  🔗 backlinks: ${found.size} vídeos de YouTube enlazando a ${c.domain}`);
+    } catch (e) { console.log("backlinks: " + String(e.message).slice(0, 100)); }
+  }
   prev.forEach(v => idSet.delete(v.id)); // ya conocidos: no re-consultar detalles aquí
   prev.filter(v => !v.dur).forEach(v => idSet.add(v.id)); // backfill: registros antiguos sin duración
   let data = [];
@@ -303,14 +322,9 @@ async function processCompetitor(c) {
   console.log(`${c.id}: ${all.length} menciones (+${all.length - prev.length}) · ${nl} con enlace · ${nv} verificadas · cuota usada ~${quota}`);
 }
 
-// lanza el actor de transcripts de Apify y devuelve los items del dataset
-async function apifyTranscripts(ids, lang) {
-  const input = {
-    startUrls: ids.map(id => ({ url: "https://www.youtube.com/watch?v=" + id })),
-    languages: [...new Set([lang, "en", "es", "fr", "it", "de", "pt", "pl", "nl", "ja", "ru", "tr", "ko"])],
-    subType: "both", outputFormats: ["text"], enableAiFallback: false
-  };
-  const r = await fetch(`https://api.apify.com/v2/acts/codepoetry~youtube-transcript-ai-scraper/runs?token=${APIFY_TOKEN}`,
+// lanza un actor de Apify y devuelve los items del dataset al terminar
+async function apifyRunActor(actor, input) {
+  const r = await fetch(`https://api.apify.com/v2/acts/${actor}/runs?token=${APIFY_TOKEN}`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
   const j = await r.json();
   if (j.error) throw new Error(j.error.message);
@@ -322,6 +336,14 @@ async function apifyTranscripts(ids, lang) {
   }
   if (run.status !== "SUCCEEDED") throw new Error("run apify " + run.status);
   return await (await fetch(`https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?token=${APIFY_TOKEN}&clean=true`)).json();
+}
+// transcripts de YouTube (captions) vía Apify
+function apifyTranscripts(ids, lang) {
+  return apifyRunActor("codepoetry~youtube-transcript-ai-scraper", {
+    startUrls: ids.map(id => ({ url: "https://www.youtube.com/watch?v=" + id })),
+    languages: [...new Set([lang, "en", "es", "fr", "it", "de", "pt", "pl", "nl", "ja", "ru", "tr", "ko"])],
+    subType: "both", outputFormats: ["text"], enableAiFallback: false
+  });
 }
 
 async function gemini(videoId, brand, hint) {
