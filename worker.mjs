@@ -134,6 +134,10 @@ async function processCompetitor(c) {
     v.code = sanitizeCode(v.code);
     v.hasLink = !!v.code;
     if (v.spoken === undefined && v.paid === "paid") v.paid = (v.hasLink || v.declared) ? "maybe" : "organic";
+    // los "sin mención" verificados con la ventana antigua de 6 min no valen si el vídeo es más largo
+    if (v.spoken === false && !v.vFull && v.dur > 360 && (v.hasLink || v.declared)) {
+      delete v.spoken; delete v.spokenQuote; delete v.spokenAt; v.vTries = 0; v.paid = "maybe";
+    }
   });
   const run = (state.run || 0) + 1;
 
@@ -235,6 +239,7 @@ async function processCompetitor(c) {
       try {
         const verdict = await gemini(v.id, c.name, c.hint || "");
         v.spoken = !!verdict.spoken;
+        v.vFull = true; // veredicto sobre el vídeo completo
         v.spokenQuote = verdict.quote || null;
         v.spokenAt = verdict.second ?? null;
         v.paid = v.spoken ? "paid" : "organic";
@@ -259,8 +264,7 @@ async function gemini(videoId, brand, hint) {
   const models = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
   const body = {
     contents: [{ parts: [
-      { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId },
-        videoMetadata: { startOffset: "0s", endOffset: "360s" } }, // solo los primeros 6 min (donde vive el ad-read) para caber en el tier gratis
+      { fileData: { fileUri: "https://www.youtube.com/watch?v=" + videoId } }, // vídeo completo: el ad-read puede ir a mitad o al final (dur<1500 limita el coste)
       { text: `Analiza el AUDIO de este fragmento de vídeo. ¿El creador menciona VERBALMENTE la marca "${brand}" (una eSIM de viaje${hint ? "; " + hint : ""})? Un enlace en la descripción NO cuenta: solo la voz. Responde SOLO JSON: {"spoken": true o false, "quote": "cita aproximada de la frase donde la menciona, o null", "second": segundo aproximado donde empieza, o null}` }
     ]}],
     generationConfig: { responseMimeType: "application/json", temperature: 0, mediaResolution: "MEDIA_RESOLUTION_LOW" }
