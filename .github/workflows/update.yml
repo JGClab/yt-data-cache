@@ -21,6 +21,7 @@ jobs:
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
       - name: Commit data
         run: |
           git config user.name "tracker-bot"
