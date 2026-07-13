@@ -80,15 +80,20 @@ function affCode(desc, RXs) {
   return null;
 }
 
-function mapVids(vids, name, RXs) {
+function mapVids(vids, name, RXs, c) {
+  const excluded = new Set((c && c.excludeChannels) || []);
+  const ctxTerms = (c && c.contextTerms) || [];
   return vids
     .filter(v => ((v.snippet.title + " " + v.snippet.description).toLowerCase().includes(name)))
+    .filter(v => !excluded.has(v.snippet.channelId)) // homónimos conocidos fuera
     .map(v => {
       const sn = v.snippet, txt = sn.title + " " + sn.description;
       const declared = v.paidProductPlacementDetails?.hasPaidProductPlacement;
       const code = affCode(sn.description, RXs);
       const hasLink = !!code; // enlace de afiliado REAL, no un enlace cualquiera a la web
       const heur = PAID_RX.test(txt) && txt.toLowerCase().includes(name || "");
+      // menciones sin enlace ni declaración: exigir contexto del sector para descartar homónimos
+      if (!code && !declared && ctxTerms.length && !ctxTerms.some(t => txt.toLowerCase().includes(t))) return null;
       const dur = parseDur(v.contentDetails?.duration);
       return {
         id: v.id, title: sn.title, channel: sn.channelTitle, channelId: sn.channelId,
@@ -102,7 +107,8 @@ function mapVids(vids, name, RXs) {
         paid: (hasLink || heur || declared) ? "maybe" : "organic", // "paid" SOLO lo otorga la mención hablada verificada
         declared: !!declared
       };
-    });
+    })
+    .filter(Boolean);
 }
 
 async function fetchDetails(ids) {
@@ -120,7 +126,9 @@ async function processCompetitor(c) {
   const file = `data/${c.id}.json`;
   let state = { at: null, run: 0, videos: [], chanMeta: {} };
   if (fs.existsSync(file)) state = JSON.parse(fs.readFileSync(file, "utf8"));
-  const prev = state.videos || [];
+  let prev = state.videos || [];
+  const excludedMig = new Set(c.excludeChannels || []);
+  prev = prev.filter(v => !excludedMig.has(v.channelId));
   // migración: sanear registros antiguos con códigos falsos (rutas de idioma, esim-*)
   prev.forEach(v => {
     v.code = sanitizeCode(v.code);
@@ -151,7 +159,7 @@ async function processCompetitor(c) {
   prev.forEach(v => idSet.delete(v.id)); // ya conocidos: no re-consultar detalles aquí
   prev.filter(v => !v.dur).forEach(v => idSet.add(v.id)); // backfill: registros antiguos sin duración
   let data = [];
-  try { data = mapVids(await fetchDetails([...idSet]), name, RXs); } catch (e) { if (e.message !== "QUOTA") throw e; }
+  try { data = mapVids(await fetchDetails([...idSet]), name, RXs, c); } catch (e) { if (e.message !== "QUOTA") throw e; }
 
   // FASE 2 — bola de nieve con cooldown y prioridad
   const linkCount = {};
@@ -195,7 +203,7 @@ async function processCompetitor(c) {
     }
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 2"); }
   let linkData = [];
-  try { linkData = mapVids(await fetchDetails([...newIds]), "", RXs); } catch (e) { if (e.message !== "QUOTA") throw e; }
+  try { linkData = mapVids(await fetchDetails([...newIds]), "", RXs, c); } catch (e) { if (e.message !== "QUOTA") throw e; }
 
   // FASE 3 — populares por país
   let popData = [];
@@ -205,7 +213,7 @@ async function processCompetitor(c) {
       const res = await yt("videos", { part: "snippet", chart: "mostPopular", regionCode: rg, maxResults: "50" });
       (res.items || []).forEach(v => { if (!have.has(v.id) && affCode(v.snippet?.description, RXs)) popIds.add(v.id); });
     }
-    popData = mapVids(await fetchDetails([...popIds]), "", RXs);
+    popData = mapVids(await fetchDetails([...popIds]), "", RXs, c);
   } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en fase 3"); }
 
   // ACUMULAR
@@ -216,10 +224,9 @@ async function processCompetitor(c) {
 
   // FASE 4 — verificación de mención hablada con Gemini (escucha el audio real)
   if (GEMINI_KEY) {
-    // muestreo por canal: máx 3 vídeos verificados por canal (suficiente para conocer su patrón),
-    // priorizando los canales con más views acumuladas (donde está la inversión de verdad)
     // TODO vídeo con enlace se verifica individualmente (los canales mezclan ad-reads
-    // pagados con enlaces de plantilla, no se puede inferir por canal). Más views primero.
+    // pagados con enlaces de plantilla, no se puede inferir por canal).
+    // Orden: más views primero — donde está el impacto/inversión.
     const pend = all
       .filter(v => (v.hasLink || v.declared) && v.spoken === undefined && (v.vTries || 0) < 3 && v.dur && v.dur < 1500)
       .sort((a, b) => b.views - a.views)
@@ -263,7 +270,7 @@ async function gemini(videoId, brand, hint) {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${GEMINI_KEY}`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json();
-    if (j.error) { lastErr = new Error(JSON.stringify(j.error).slice(0, 350)); if (j.error.code === 404) continue; throw lastErr; }
+    if (j.error) { lastErr = new Error(j.error.message); if (j.error.code === 404) continue; throw lastErr; }
     const txt = j.candidates?.[0]?.content?.parts?.[0]?.text || "";
     return JSON.parse(txt);
   }
