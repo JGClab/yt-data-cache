@@ -7,7 +7,7 @@ const KEY = process.env.YT_API_KEY;
 if (!KEY) { console.error("Falta el secret YT_API_KEY"); process.exit(1); }
 const GEMINI_KEY = process.env.GEMINI_API_KEY; // fallback: vídeos sin transcript
 const APIFY_TOKEN = process.env.APIFY_TOKEN;       // vía principal: transcripts vía Apify (~$0.001/vídeo)
-const TRANSCRIPTS_PER_RUN = 150; // transcripts por ejecución (coste ~$0.15/run, cabe en el crédito gratis)
+const TRANSCRIPTS_PER_RUN = 2000; // transcripts por ejecución (plan de pago: ~$2/run mientras haya backlog, luego céntimos)
 const VERIFY_PER_RUN = 60; // vídeos por ejecución; el guard de cuota corta solo si el tier diario se agota
 
 const config = JSON.parse(fs.readFileSync("config.json", "utf8"));
@@ -259,9 +259,13 @@ async function processCompetitor(c) {
     // agrupar por idioma del vídeo para pedir la pista de subtítulos correcta (no la traducción)
     const groups = {};
     pendT.forEach(v => { const l = /^[a-z]{2}$/.test(v.lang || "") ? v.lang : "en"; (groups[l] = groups[l] || []).push(v); });
+    const batches = [];
     for (const [lang, vids] of Object.entries(groups)) {
-      for (let i = 0; i < vids.length; i += 40) {
-        const batch = vids.slice(i, i + 40);
+      for (let i = 0; i < vids.length; i += 100) batches.push({ lang, batch: vids.slice(i, i + 100) });
+    }
+    const CONC = 5; // lotes en paralelo (el plan de pago permite runs concurrentes de sobra)
+    for (let w = 0; w < batches.length; w += CONC) {
+      await Promise.all(batches.slice(w, w + CONC).map(async ({ lang, batch }) => {
         try {
           const items = await apifyTranscripts(batch.map(v => v.id), lang);
           const byVid = {};
@@ -284,7 +288,7 @@ async function processCompetitor(c) {
             console.log(`  📜 ${v.id} (${v.channel}): ${v.spoken ? "MENCIÓN EN TRANSCRIPT" : "sin mención"}`);
           }
         } catch (e) { console.log("apify: " + String(e.message).slice(0, 100)); }
-      }
+      }));
     }
   }
 
