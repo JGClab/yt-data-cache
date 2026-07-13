@@ -413,7 +413,9 @@ async function gemini(videoId, brand, hint) {
 // FASES GLOBALES (tras procesar todas las marcas)
 // ================================================================
 // A — share of search semanal: quién aparece en las búsquedas genéricas de eSIM por mercado
-const SERP_MARKETS = {
+// Mercados y keywords del share of search: se leen de config.json (sección "serp"),
+// editable sin tocar código. Lo de abajo es solo el fallback por defecto.
+const SERP_MARKETS = (config.serp && config.serp.markets) || {
   US: { gl: "us", hl: "en", queries: ["best esim for travel", "best esim 2026", "esim for europe travel", "esim for japan", "esim review"] },
   GB: { gl: "gb", hl: "en", queries: ["best esim uk", "best esim for travel", "esim for usa", "esim europe", "esim review"] },
   ES: { gl: "es", hl: "es", queries: ["mejor esim para viajar", "esim para europa", "esim para estados unidos", "esim opiniones", "que esim comprar"] },
