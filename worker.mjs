@@ -247,6 +247,31 @@ async function processCompetitor(c) {
   data.concat(linkData).concat(popData).forEach(v => byId[v.id] = { ...(byId[v.id] || {}), ...v });
   const all = Object.values(byId);
 
+  // FASE 3b — snapshot diario de views (Δ24h, Δ7d y "views del mes": nuevos vs catálogo)
+  // Refresca statistics de vídeos de los últimos 12 meses + todas las pagadas ✓ (1 unidad por cada 50).
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const month = today.slice(0, 7);
+    const cutRefresh = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
+    const targets = all.filter(v => v.date >= cutRefresh || v.paid === "paid");
+    if (targets.length && state.snapAt !== today) {
+      for (let i = 0; i < targets.length; i += 50) {
+        const chunk = targets.slice(i, i + 50);
+        const res = await yt("videos", { part: "statistics", id: chunk.map(v => v.id).join(","), maxResults: "50" });
+        const m = {}; (res.items || []).forEach(it => m[it.id] = +(it.statistics?.viewCount || 0));
+        for (const v of chunk) {
+          const nv = m[v.id]; if (nv === undefined) continue;
+          if (v.vM0m !== month) { v.vPrev = (v.vM0 !== undefined) ? Math.max(0, v.views - v.vM0) : null; v.vM0 = v.views; v.vM0m = month; }
+          if (!v.vWAt || (Date.parse(today) - Date.parse(v.vWAt)) >= 7 * 864e5) { v.vW = v.views; v.vWAt = today; }
+          v.vD = v.views; v.vDAt = v.snapAt || null;
+          v.views = nv; v.snapAt = today;
+        }
+      }
+      state.snapAt = today;
+      console.log(`  \ud83d\udcc8 snapshot de views: ${targets.length} v\u00eddeos refrescados`);
+    }
+  } catch (e) { if (e.message !== "QUOTA") throw e; console.log("Cuota agotada en snapshot de views"); }
+
   // FASE 4a — verificación por TRANSCRIPT (Apify): barata y masiva; la regla:
   // si la marca aparece en lo HABLADO del vídeo → pagada; si solo hay enlace → orgánica.
   if (APIFY_TOKEN) {
@@ -320,7 +345,7 @@ async function processCompetitor(c) {
   }
 
   fs.mkdirSync("data", { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), run, videos: all, chanMeta }));
+  fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), run, snapAt: state.snapAt || null, videos: all, chanMeta }));
   const nl = all.filter(v => v.hasLink).length;
   const nv = all.filter(v => v.spoken !== undefined).length;
   console.log(`${c.id}: ${all.length} menciones (+${all.length - prev.length}) · ${nl} con enlace · ${nv} verificadas · cuota usada ~${quota}`);
