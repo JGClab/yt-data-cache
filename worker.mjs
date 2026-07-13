@@ -140,6 +140,8 @@ async function processCompetitor(c) {
     if (v.spoken === false && !v.vFull && v.dur > 360 && (v.hasLink || v.declared)) {
       delete v.spoken; delete v.spokenQuote; delete v.spokenAt; v.vTries = 0; v.paid = "maybe";
     }
+    // reintento: los marcados "intentado" sin veredicto vienen del bug de mapeo del actor (corregido)
+    if (v.tTried && v.spoken === undefined) delete v.tTried;
   });
   const run = (state.run || 0) + 1;
 
@@ -308,15 +310,15 @@ async function processCompetitor(c) {
           const items = await apifyTranscripts(batch.map(v => v.id), lang);
           const byVid = {};
           items.forEach(it => {
-            const u = it.videoUrl || it.video_url || it.url || it.inputUrl || "";
-            const id = it.videoId || it.video_id || (u.match(/[?&]v=([\w-]{11})/) || [])[1];
+            const u = it.url || it.videoUrl || it.video_url || it.inputUrl || "";
+            const id = (it.metadata && it.metadata.id) || it.videoId || it.video_id || (u.match(/(?:[?&]v=|youtu\.be\/)([\w-]{11})/) || [])[1];
             if (id) byVid[id] = it;
           });
           for (const v of batch) {
             const it = byVid[v.id];
             v.tTried = true;
-            const raw = it && !it.error ? (it.text || it.transcript || it.transcript_text || it.plain_text) : null;
-            if (!raw) continue; // sin transcript → lo escuchará Gemini
+            const raw = it && !it.error ? (it.transcript_text || it.transcript_llm || it.text || it.transcript || it.plain_text) : null;
+            if (!raw) { console.log(`  \ud83d\udcdc ${v.id}: sin transcript${it && it.error_code ? " (" + it.error_code + ")" : (it ? "" : " (sin item en dataset)")}`); continue; } // sin transcript → lo escuchará Gemini
             const text = typeof raw === "string" ? raw : JSON.stringify(raw);
             const m = text.match(RXv);
             v.spoken = !!m; v.vFull = true; v.vSrc = "transcript";
