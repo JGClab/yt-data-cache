@@ -409,7 +409,98 @@ async function gemini(videoId, brand, hint) {
   throw lastErr || new Error("sin modelo disponible");
 }
 
+// ================================================================
+// FASES GLOBALES (tras procesar todas las marcas)
+// ================================================================
+// A — share of search semanal: quién aparece en las búsquedas genéricas de eSIM por mercado
+const SERP_MARKETS = {
+  US: { gl: "us", hl: "en", queries: ["best esim for travel", "best esim 2026", "esim for europe travel", "esim for japan", "esim review"] },
+  GB: { gl: "gb", hl: "en", queries: ["best esim uk", "best esim for travel", "esim for usa", "esim europe", "esim review"] },
+  ES: { gl: "es", hl: "es", queries: ["mejor esim para viajar", "esim para europa", "esim para estados unidos", "esim opiniones", "que esim comprar"] },
+  MX: { gl: "mx", hl: "es", queries: ["mejor esim para viajar", "esim para europa", "esim para usa", "esim opiniones"] },
+  FR: { gl: "fr", hl: "fr", queries: ["meilleure esim voyage", "esim pour le japon", "esim europe", "esim avis"] },
+  IT: { gl: "it", hl: "it", queries: ["migliore esim viaggio", "esim per stati uniti", "esim recensione", "esim europa"] },
+  DE: { gl: "de", hl: "de", queries: ["beste esim reisen", "esim usa", "esim test", "esim europa"] },
+  BR: { gl: "br", hl: "pt", queries: ["melhor esim viagem", "esim para europa", "esim vale a pena", "esim internacional"] }
+};
+async function serpWeekly() {
+  if (!APIFY_TOKEN) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const file = "data/serp.json";
+  let hist = [];
+  try { if (fs.existsSync(file)) hist = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {}
+  if (hist.length && (Date.parse(today) - Date.parse(hist[hist.length - 1].d)) < 6.5 * 864e5) return; // semanal
+  const brandRX = {};
+  for (const c of config.competitors) {
+    const pats = (c.spokenVariants || [c.name.toLowerCase()]).map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    pats.push(c.domain.replace(/\./g, "\\."));
+    brandRX[c.id] = new RegExp("\\b(" + pats.join("|") + ")\\b", "i");
+  }
+  const entry = { d: today, markets: {} };
+  for (const [mk, m] of Object.entries(SERP_MARKETS)) {
+    const scores = {}; let totalW = 0;
+    for (const q of m.queries) {
+      try {
+        const items = await apifyRunActor("apidojo~youtube-scraper-api", { keywords: [q], gl: m.gl, hl: m.hl, maxItems: 20, sort: "r" });
+        items.slice(0, 20).forEach((it, idx) => {
+          const txt = JSON.stringify(it);
+          const w = 1 / (idx + 1); totalW += w;
+          for (const c of config.competitors) if (brandRX[c.id].test(txt)) scores[c.id] = (scores[c.id] || 0) + w;
+        });
+      } catch (e) { console.log("serp " + mk + " \u00ab" + q + "\u00bb: " + String(e.message).slice(0, 60)); }
+    }
+    entry.markets[mk] = {};
+    for (const c of config.competitors) entry.markets[mk][c.id] = totalW ? +(100 * (scores[c.id] || 0) / totalW).toFixed(1) : 0;
+    console.log("  \ud83d\udd0d " + mk + ": " + Object.entries(entry.markets[mk]).map(([k, v]) => k + " " + v + "%").join(" \u00b7 "));
+  }
+  hist.push(entry);
+  fs.writeFileSync(file, JSON.stringify(hist.slice(-60)));
+}
+
+// B — clasificación de canales por vertical (Gemini, solo texto): data/channels.json
+async function classifyVerticals() {
+  if (!GEMINI_KEY) return;
+  const file = "data/channels.json";
+  let db = {};
+  try { if (fs.existsSync(file)) db = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) {}
+  const chans = {};
+  for (const c of config.competitors) {
+    const f = `data/${c.id}.json`;
+    if (!fs.existsSync(f)) continue;
+    (JSON.parse(fs.readFileSync(f, "utf8")).videos || []).forEach(v => {
+      if (!v.channelId || db[v.channelId]) return;
+      const ch = chans[v.channelId] = chans[v.channelId] || { name: v.channel, titles: [] };
+      if (ch.titles.length < 3) ch.titles.push(v.title);
+    });
+  }
+  const ids = Object.keys(chans).slice(0, 400); // tope por ejecución
+  if (!ids.length) return;
+  const TAX = ["viajes", "tech", "divulgacion", "deportes", "finanzas", "lifestyle", "gaming", "entretenimiento", "noticias", "otro"];
+  let done = 0;
+  for (let i = 0; i < ids.length; i += 40) {
+    const batch = ids.slice(i, i + 40);
+    const lines = batch.map(id => `${id} :: ${chans[id].name} :: ${chans[id].titles.join(" | ")}`).join("\n");
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: `Clasifica cada canal de YouTube en UNA vertical de esta lista exacta: ${TAX.join(", ")}. Cada l\u00ednea es "channelId :: nombre del canal :: t\u00edtulos de v\u00eddeos". Responde SOLO JSON: {"channelId": "vertical", ...}\n\n${lines}` }] }],
+          generationConfig: { responseMimeType: "application/json", temperature: 0 }
+        })
+      });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message);
+      const map = JSON.parse(j.candidates?.[0]?.content?.parts?.[0]?.text || "{}");
+      for (const [id, v] of Object.entries(map)) if (chans[id] && TAX.includes(String(v).toLowerCase())) { db[id] = { v: String(v).toLowerCase(), n: chans[id].name }; done++; }
+    } catch (e) { console.log("verticales: " + String(e.message).slice(0, 80)); break; }
+    await new Promise(r2 => setTimeout(r2, 5000));
+  }
+  if (done) { fs.writeFileSync(file, JSON.stringify(db)); console.log(`  \ud83c\udff7\ufe0f verticales: ${done} canales clasificados (${Object.keys(db).length} total)`); }
+}
+
 for (const c of config.competitors) {
   try { await processCompetitor(c); }
   catch (e) { console.error(c.id + ": " + e.message); }
 }
+try { await serpWeekly(); } catch (e) { console.error("serp: " + e.message); }
+try { await classifyVerticals(); } catch (e) { console.error("verticales: " + e.message); }
